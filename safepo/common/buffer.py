@@ -163,6 +163,39 @@ class VectorizedOnPolicyBuffer:
 
         return data
 
+    def save_epoch(self, path: str, cpu: bool = True) -> None:
+        """
+        Save the current epoch's collected data to disk.
+
+        This calls `get()` to finalize and retrieve the concatenated data across
+        all environments, optionally moves tensors to CPU, and persists them via
+        `torch.save` as a dict of tensors.
+
+        Args:
+            path (str): Destination file path (e.g., "replay_epoch_0001.pt").
+            cpu (bool): If True, move tensors to CPU before saving. Defaults to True.
+        """
+        data = self.get()
+        if cpu:
+            data = {k: v.detach().cpu() for k, v in data.items()}
+        torch.save(data, path)
+
+    @staticmethod
+    def load_epoch(path: str, device: torch.device = "cpu") -> dict[str, torch.Tensor]:
+        """
+        Load an epoch's replay data saved by `save_epoch`.
+
+        Args:
+            path (str): Path to the saved file.
+            device (torch.device): Device to map the loaded tensors to. Defaults to "cpu".
+
+        Returns:
+            dict[str, torch.Tensor]: Dict of tensors with keys like "obs", "act", "reward", etc.
+        """
+        data = torch.load(path, map_location=device)
+        # Ensure tensors are on the requested device
+        return {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in data.items()}
+
 
 def discount_cumsum(vector_x: torch.Tensor, discount: float) -> torch.Tensor:
     """
@@ -463,4 +496,3 @@ class SeparatedReplayBuffer(object):
                 else:
                     factor_batch = factor[indices]
                     yield share_obs_batch, obs_batch, rnn_states_batch, rnn_states_critic_batch, actions_batch, value_preds_batch, return_batch, masks_batch, active_masks_batch, old_action_log_probs_batch, adv_targ, available_actions_batch, factor_batch
-

@@ -227,6 +227,9 @@ def main(args, cfg_env=None):
                     )
         rollout_end_time = time.time()
 
+        # persist buffer after rollout
+        buffer.save_epoch(path=f"{args.log_dir}/epoch_{epoch}.pt")
+
         eval_start_time = time.time()
 
         eval_episodes = 1 if epoch < epochs - 1 else 10
@@ -296,6 +299,24 @@ def main(args, cfg_env=None):
             ) in dataloader:
                 reward_critic_optimizer.zero_grad()
                 loss_r = nn.functional.mse_loss(policy.reward_critic(obs_b), target_value_r_b)
+
+                # # Get predictions and targets
+                # pred_values = policy.reward_critic(obs_b)
+                # target_values = target_value_r_b
+                
+                # # Save the values to a local file
+                # save_dir = os.path.join(os.getcwd(), 'critic_values')
+                # os.makedirs(save_dir, exist_ok=True)
+                
+                # # Save as a timestamped file
+                # timestamp = time.time()
+                # data_dict = {
+                #     'predicted_values': pred_values.detach().cpu().numpy(),
+                #     'target_values': target_values.detach().cpu().numpy(),
+                #     'timestamp': timestamp
+                # }
+                # np.savez(os.path.join(save_dir, f'critic_values_ep{epoch}_it{_}.npz'), **data_dict)
+
                 cost_critic_optimizer.zero_grad()
                 loss_c = nn.functional.mse_loss(policy.cost_critic(obs_b), target_value_c_b)
                 if config.get("use_critic_norm", True):

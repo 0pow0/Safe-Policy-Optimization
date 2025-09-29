@@ -58,6 +58,12 @@ class VectorizedOnPolicyBuffer:
                 "act": torch.zeros(
                     (size, *act_space.shape), dtype=torch.float32, device=device
                 ),
+                "act_mean": torch.zeros(
+                    (size, *act_space.shape), dtype=torch.float32, device=device
+                ),
+                "act_std": torch.zeros(
+                    (size, *act_space.shape), dtype=torch.float32, device=device
+                ),
                 "reward": torch.zeros(size, dtype=torch.float32, device=device),
                 "cost": torch.zeros(size, dtype=torch.float32, device=device),
                 "done": torch.zeros(size, dtype=torch.float32, device=device),

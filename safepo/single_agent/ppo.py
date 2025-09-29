@@ -89,6 +89,9 @@ def main(args, cfg_env=None):
         args.num_envs = env.num_envs
         config = isaac_gym_specific_cfg
 
+    print(f"{obs_space=}")
+    exit()
+
     # set training steps
     steps_per_epoch = config.get("steps_per_epoch", args.steps_per_epoch)
     total_steps = config.get("total_steps", args.total_steps)
@@ -155,6 +158,9 @@ def main(args, cfg_env=None):
         for steps in range(local_steps_per_epoch):
             with torch.no_grad():
                 act, log_prob, value_r, value_c = policy.step(obs, deterministic=False)
+                dist = policy.actor(obs)
+                act_mean = dist.mean
+                act_std = dist.stddev
             action = act.detach().squeeze() if args.task in isaac_gym_map.keys() else act.detach().squeeze().cpu().numpy()
             next_obs, reward, cost, terminated, truncated, info = env.step(action)
 
@@ -180,6 +186,8 @@ def main(args, cfg_env=None):
             buffer.store(
                 obs=obs,
                 act=act,
+                act_mean=act_mean,
+                act_std=act_std,
                 reward=reward,
                 cost=cost,
                 value_r=value_r,
@@ -241,7 +249,9 @@ def main(args, cfg_env=None):
                 eval_rew, eval_cost, eval_len = 0.0, 0.0, 0.0
                 while not eval_done:
                     with torch.no_grad():
-                        act, log_prob, value_r, value_c = policy.step(eval_obs, deterministic=True)
+                        act, log_prob, value_r, value_c = policy.step(
+                            eval_obs, deterministic=True
+                        )
                     next_obs, reward, cost, terminated, truncated, info = env.step(
                         act.detach().squeeze().cpu().numpy()
                     )

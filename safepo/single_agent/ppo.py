@@ -23,6 +23,7 @@ import time
 from collections import deque
 
 import numpy as np
+from PIL import Image
 try: 
     from isaacgym import gymutil
 except ImportError:
@@ -89,9 +90,6 @@ def main(args, cfg_env=None):
         args.num_envs = env.num_envs
         config = isaac_gym_specific_cfg
 
-    print(f"{obs_space=}")
-    exit()
-
     # set training steps
     steps_per_epoch = config.get("steps_per_epoch", args.steps_per_epoch)
     total_steps = config.get("total_steps", args.total_steps)
@@ -145,6 +143,10 @@ def main(args, cfg_env=None):
     logger.setup_torch_saver(policy.actor)
     logger.log("Start with training.")
     obs, _ = env.reset()
+    render_dir = os.path.join(args.log_dir, "renders")
+    os.makedirs(render_dir, exist_ok=True)
+    render_idx = 0
+
     obs = torch.as_tensor(obs, dtype=torch.float32, device=device)
     ep_ret, ep_cost, ep_len = (
         np.zeros(args.num_envs),
@@ -194,6 +196,31 @@ def main(args, cfg_env=None):
                 value_c=value_c,
                 log_prob=log_prob,
             )
+            try:
+                frame = env.render()
+            except Exception:
+                frame = None
+            if frame is not None:
+                frame_array = np.asarray(frame)
+                if frame_array.ndim == 4:
+                    for env_idx, env_frame in enumerate(frame_array):
+                        env_frame = np.asarray(env_frame)
+                        if env_frame.dtype != np.uint8:
+                            env_frame = np.clip(env_frame, 0, 255).astype(np.uint8)
+                        Image.fromarray(env_frame).save(
+                            os.path.join(
+                                render_dir,
+                                f"frame_{render_idx:08d}_env{env_idx}.png",
+                            )
+                        )
+                        render_idx += 1
+                elif frame_array.ndim == 3:
+                    if frame_array.dtype != np.uint8:
+                        frame_array = np.clip(frame_array, 0, 255).astype(np.uint8)
+                    Image.fromarray(frame_array).save(
+                        os.path.join(render_dir, f"frame_{render_idx:08d}.png")
+                    )
+                    render_idx += 1
 
             obs = next_obs
             epoch_end = steps >= local_steps_per_epoch - 1

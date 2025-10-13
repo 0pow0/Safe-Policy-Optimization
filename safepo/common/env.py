@@ -58,7 +58,7 @@ def make_sa_mujoco_env(num_envs: int, env_id: str, seed: int|None = None):
     if num_envs > 1:
         def create_env() -> Callable:
             """Creates an environment that can enable or disable the environment checker."""
-            env = safety_gymnasium.make(env_id)
+            env = safety_gymnasium.make(env_id, render_mode="rgb_array", camera_name="track")
             env = SafeRescaleAction(env, -1.0, 1.0)
             return env
         env_fns = [create_env for _ in range(num_envs)]
@@ -68,7 +68,7 @@ def make_sa_mujoco_env(num_envs: int, env_id: str, seed: int|None = None):
         obs_space = env.single_observation_space
         act_space = env.single_action_space
     else:
-        env = safety_gymnasium.make(env_id)
+        env = safety_gymnasium.make(env_id, render_mode="rgb_array", camera_name="track")
         env.reset(seed=seed)
         obs_space = env.observation_space
         act_space = env.action_space

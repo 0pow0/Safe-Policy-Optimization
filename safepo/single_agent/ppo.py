@@ -171,7 +171,6 @@ def main(args, cfg_env=None):
     logger.log("Start with training.")
     obs, _ = env.reset()
     render_root_dir = os.path.join(args.log_dir, "renders")
-    os.makedirs(render_root_dir, exist_ok=True)
     render_idx = 0
 
     obs = torch.as_tensor(obs, dtype=torch.float32, device=device)
@@ -182,10 +181,12 @@ def main(args, cfg_env=None):
     )
     # training loop
     for epoch in range(epochs):
+        is_last_epoch = epoch == epochs - 1
         rollout_start_time = time.time()
         # collect samples until we have enough to update
-        epoch_render_dir = os.path.join(render_root_dir, f"epoch_{epoch:05d}")
-        os.makedirs(epoch_render_dir, exist_ok=True)
+        epoch_render_dir = (
+            os.path.join(render_root_dir, f"epoch_{epoch:05d}") if is_last_epoch else None
+        )
         for steps in range(local_steps_per_epoch):
             with torch.no_grad():
                 act, log_prob, value_r, value_c = policy.step(obs, deterministic=False)
@@ -226,48 +227,49 @@ def main(args, cfg_env=None):
                 log_prob=log_prob,
             )
             env_frame_ids = {env_idx: sample_id for env_idx, sample_id in stored_samples}
-            try:
-                frame = env.render()
-            except Exception:
-                frame = None
-            if frame is not None:
-                if isinstance(frame, (list, tuple)):
-                    per_env_frames = list(frame)
-                else:
-                    per_env_frames = [frame]
-
-                if len(per_env_frames) == args.num_envs:
-                    env_frame_iter = enumerate(per_env_frames)
-                else:
-                    target_env = stored_samples[0][0] if stored_samples else 0
-                    env_frame_iter = [(target_env, per_env_frames[0])]
-
-                for env_idx, env_frame in env_frame_iter:
-                    if env_frame is None:
-                        continue
-                    env_frame = np.asarray(env_frame)
-                    if env_frame.ndim > 3:
-                        env_frame = np.squeeze(env_frame)
-                    if env_frame.dtype != np.uint8:
-                        env_frame = np.clip(env_frame, 0, 255).astype(np.uint8)
-
-                    frame_id = env_frame_ids.get(env_idx)
-                    if frame_id is not None:
-                        frame_path = frame_path_from_id(
-                            render_root_dir,
-                            frame_id,
-                            args.num_envs,
-                            local_steps_per_epoch,
-                        )
-                        frame_suffix = os.path.relpath(frame_path, render_root_dir)
-                        buffer.register_frame_suffix(frame_id, frame_suffix)
+            if is_last_epoch:
+                try:
+                    frame = env.render()
+                except Exception:
+                    frame = None
+                if frame is not None:
+                    if isinstance(frame, (list, tuple)):
+                        per_env_frames = list(frame)
                     else:
-                        env_dir = os.path.join(epoch_render_dir, f"env_{env_idx:04d}")
-                        frame_path = os.path.join(env_dir, f"frame_{render_idx:08d}.png")
+                        per_env_frames = [frame]
 
-                    os.makedirs(os.path.dirname(frame_path), exist_ok=True)
-                    Image.fromarray(env_frame).save(frame_path)
-                    render_idx += 1
+                    if len(per_env_frames) == args.num_envs:
+                        env_frame_iter = enumerate(per_env_frames)
+                    else:
+                        target_env = stored_samples[0][0] if stored_samples else 0
+                        env_frame_iter = [(target_env, per_env_frames[0])]
+
+                    for env_idx, env_frame in env_frame_iter:
+                        if env_frame is None:
+                            continue
+                        env_frame = np.asarray(env_frame)
+                        if env_frame.ndim > 3:
+                            env_frame = np.squeeze(env_frame)
+                        if env_frame.dtype != np.uint8:
+                            env_frame = np.clip(env_frame, 0, 255).astype(np.uint8)
+
+                        frame_id = env_frame_ids.get(env_idx)
+                        if frame_id is not None:
+                            frame_path = frame_path_from_id(
+                                render_root_dir,
+                                frame_id,
+                                args.num_envs,
+                                local_steps_per_epoch,
+                            )
+                            frame_suffix = os.path.relpath(frame_path, render_root_dir)
+                            buffer.register_frame_suffix(frame_id, frame_suffix)
+                        else:
+                            env_dir = os.path.join(epoch_render_dir, f"env_{env_idx:04d}")
+                            frame_path = os.path.join(env_dir, f"frame_{render_idx:08d}.png")
+
+                        os.makedirs(os.path.dirname(frame_path), exist_ok=True)
+                        Image.fromarray(env_frame).save(frame_path)
+                        render_idx += 1
 
             obs = next_obs
             epoch_end = steps >= local_steps_per_epoch - 1
@@ -308,9 +310,6 @@ def main(args, cfg_env=None):
                         last_value_r=last_value_r, last_value_c=last_value_c, idx=idx
                     )
         rollout_end_time = time.time()
-
-        # persist buffer after rollout
-        buffer.save_epoch(path=f"{args.log_dir}/epoch_{epoch}.pt")
 
         eval_start_time = time.time()
 
@@ -353,6 +352,8 @@ def main(args, cfg_env=None):
 
         # update policy
         data = buffer.get()
+        if is_last_epoch:
+            buffer.save_epoch(path=f"{args.log_dir}/epoch_{epoch}.pt", data=data)
         old_distribution = policy.actor(data["obs"])
 
         # comnpute advantage

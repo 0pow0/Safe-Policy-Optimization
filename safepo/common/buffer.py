@@ -202,25 +202,34 @@ class VectorizedOnPolicyBuffer:
 
         return data
 
-    def save_epoch(self, path: str, cpu: bool = True) -> None:
+    def save_epoch(
+        self,
+        path: str,
+        cpu: bool = True,
+        data: dict[str, object] | None = None,
+    ) -> None:
         """
         Save the current epoch's collected data to disk.
 
-        This calls `get()` to finalize and retrieve the concatenated data across
-        all environments, optionally moves tensors to CPU, and persists them via
-        `torch.save` as a dict of tensors.
+        If ``data`` is ``None`` this calls :meth:`get` to finalize and retrieve
+        the concatenated data across all environments. Otherwise the provided
+        ``data`` dict is used directly. Tensors can optionally be moved to CPU
+        before persistence.
 
         Args:
             path (str): Destination file path (e.g., "replay_epoch_0001.pt").
             cpu (bool): If True, move tensors to CPU before saving. Defaults to True.
         """
-        data = self.get()
+        if data is None:
+            data = self.get()
         if cpu:
-            data = {
+            data_to_save = {
                 k: (v.detach().cpu() if isinstance(v, torch.Tensor) else v)
                 for k, v in data.items()
             }
-        torch.save(data, path)
+        else:
+            data_to_save = data
+        torch.save(data_to_save, path)
 
     @staticmethod
     def load_epoch(path: str, device: torch.device = "cpu") -> dict[str, torch.Tensor]:

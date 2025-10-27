@@ -74,6 +74,8 @@ class VectorizedOnPolicyBuffer:
                 "target_value_r": torch.zeros(size, dtype=torch.float32, device=device),
                 "target_value_c": torch.zeros(size, dtype=torch.float32, device=device),
                 "log_prob": torch.zeros(size, dtype=torch.float32, device=device),
+                "sample_id": torch.zeros(size, dtype=torch.int64, device=device),
+                "frame_path": [None] * size,
             }
             for _ in range(num_envs)
         ]
@@ -86,19 +88,41 @@ class VectorizedOnPolicyBuffer:
         self.path_start_idx_list = [0] * num_envs
         self._device = device
         self.num_envs = num_envs
+        self._next_sample_id = 0
+        self._sample_id_to_slot: dict[int, tuple[int, int]] = {}
 
-    def store(self, **data: torch.Tensor) -> None:
-        """
-        Store vectorized data into the buffer.
+    def store(self, **data: torch.Tensor) -> list[tuple[int, int]]:
+        """Store vectorized data into the buffer.
 
         Args:
             **data: Keyword arguments specifying data tensors to be stored.
+
+        Returns:
+            list[tuple[int, int]]: ``(env_idx, sample_id)`` pairs assigned to
+            each environment during this call.
         """
+        stored_samples: list[tuple[int, int]] = []
         for i, buffer in enumerate(self.buffers):
-            assert self.ptr_list[i] < buffer["obs"].shape[0], "Buffer overflow"
+            ptr = self.ptr_list[i]
+            assert ptr < buffer["obs"].shape[0], "Buffer overflow"
+            sample_id = self._next_sample_id
+            self._next_sample_id += 1
             for key, value in data.items():
-                buffer[key][self.ptr_list[i]] = value[i]
-            self.ptr_list[i] += 1
+                buffer[key][ptr] = value[i]
+            buffer["sample_id"][ptr] = sample_id
+            buffer["frame_path"][ptr] = None
+            self.ptr_list[i] = ptr + 1
+            self._sample_id_to_slot[sample_id] = (i, ptr)
+            stored_samples.append((i, sample_id))
+        return stored_samples
+
+    def register_frame_suffix(self, sample_id: int, suffix: str) -> None:
+        """Associate a render-path suffix with a stored sample id."""
+        slot = self._sample_id_to_slot.get(int(sample_id))
+        if slot is None:
+            return
+        env_idx, ptr = slot
+        self.buffers[env_idx]["frame_path"][ptr] = suffix
 
     def finish_path(
         self,
@@ -152,11 +176,17 @@ class VectorizedOnPolicyBuffer:
         Returns:
             dict[str, torch.Tensor]: A dictionary containing collected data tensors.
         """
-        data_pre = {k: [v] for k, v in self.buffers[0].items()}
-        for buffer in self.buffers[1:]:
-            for k, v in buffer.items():
-                data_pre[k].append(v)
-        data = {k: torch.cat(v, dim=0) for k, v in data_pre.items()}
+        tensor_keys = [k for k, v in self.buffers[0].items() if isinstance(v, torch.Tensor)]
+        list_keys = [k for k, v in self.buffers[0].items() if not isinstance(v, torch.Tensor)]
+
+        data: dict[str, torch.Tensor | list[str | None]] = {}
+        for key in tensor_keys:
+            data[key] = torch.cat([buffer[key] for buffer in self.buffers], dim=0)
+        for key in list_keys:
+            concatenated: list[str | None] = []
+            for buffer in self.buffers:
+                concatenated.extend(buffer[key])
+            data[key] = concatenated
         adv_mean = data["adv_r"].mean()
         adv_std = data["adv_r"].std()
         cadv_mean = data["adv_c"].mean()
@@ -166,6 +196,9 @@ class VectorizedOnPolicyBuffer:
             data["adv_c"] = data["adv_c"] - cadv_mean
         self.ptr_list = [0] * self.num_envs
         self.path_start_idx_list = [0] * self.num_envs
+        self._sample_id_to_slot.clear()
+        for buffer in self.buffers:
+            buffer["frame_path"] = [None] * len(buffer["frame_path"])
 
         return data
 
@@ -183,7 +216,10 @@ class VectorizedOnPolicyBuffer:
         """
         data = self.get()
         if cpu:
-            data = {k: v.detach().cpu() for k, v in data.items()}
+            data = {
+                k: (v.detach().cpu() if isinstance(v, torch.Tensor) else v)
+                for k, v in data.items()
+            }
         torch.save(data, path)
 
     @staticmethod

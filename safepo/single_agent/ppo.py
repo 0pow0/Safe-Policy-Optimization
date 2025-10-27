@@ -21,6 +21,7 @@ import random
 import sys
 import time
 from collections import deque
+from types import MethodType
 
 import numpy as np
 from PIL import Image
@@ -64,6 +65,24 @@ isaac_gym_specific_cfg = {
     'use_critic_norm': False,
 }
 
+
+def frame_path_from_id(
+    render_root_dir: str,
+    sample_id: int,
+    num_envs: int,
+    local_steps_per_epoch: int,
+) -> str:
+    """Return the absolute render path associated with ``sample_id``."""
+    samples_per_epoch = local_steps_per_epoch * num_envs
+    epoch_idx = sample_id // samples_per_epoch
+    env_idx = sample_id % num_envs
+    return os.path.join(
+        render_root_dir,
+        f"epoch_{epoch_idx:05d}",
+        f"env_{env_idx:04d}",
+        f"frame_id{sample_id:010d}.png",
+    )
+
 def main(args, cfg_env=None):
     # set the random seed, device and number of threads
     random.seed(args.seed)
@@ -89,6 +108,14 @@ def main(args, cfg_env=None):
         act_space = env.action_space
         args.num_envs = env.num_envs
         config = isaac_gym_specific_cfg
+
+    # Override troublesome env.render implementations while reusing get_images.
+    def _render_override(self, mode="human"):
+        return self.get_images()
+
+    env.render = MethodType(_render_override, env)
+    # if eval_env is not env and hasattr(eval_env, "get_images"):
+        # eval_env.render = MethodType(_render_override, eval_env)
 
     # set training steps
     steps_per_epoch = config.get("steps_per_epoch", args.steps_per_epoch)
@@ -143,8 +170,8 @@ def main(args, cfg_env=None):
     logger.setup_torch_saver(policy.actor)
     logger.log("Start with training.")
     obs, _ = env.reset()
-    render_dir = os.path.join(args.log_dir, "renders")
-    os.makedirs(render_dir, exist_ok=True)
+    render_root_dir = os.path.join(args.log_dir, "renders")
+    os.makedirs(render_root_dir, exist_ok=True)
     render_idx = 0
 
     obs = torch.as_tensor(obs, dtype=torch.float32, device=device)
@@ -157,6 +184,8 @@ def main(args, cfg_env=None):
     for epoch in range(epochs):
         rollout_start_time = time.time()
         # collect samples until we have enough to update
+        epoch_render_dir = os.path.join(render_root_dir, f"epoch_{epoch:05d}")
+        os.makedirs(epoch_render_dir, exist_ok=True)
         for steps in range(local_steps_per_epoch):
             with torch.no_grad():
                 act, log_prob, value_r, value_c = policy.step(obs, deterministic=False)
@@ -185,7 +214,7 @@ def main(args, cfg_env=None):
                     dtype=torch.float32,
                     device=device,
                 )
-            buffer.store(
+            stored_samples = buffer.store(
                 obs=obs,
                 act=act,
                 act_mean=act_mean,
@@ -196,30 +225,48 @@ def main(args, cfg_env=None):
                 value_c=value_c,
                 log_prob=log_prob,
             )
+            env_frame_ids = {env_idx: sample_id for env_idx, sample_id in stored_samples}
             try:
                 frame = env.render()
             except Exception:
                 frame = None
             if frame is not None:
-                frame_array = np.asarray(frame)
-                if frame_array.ndim == 4:
-                    for env_idx, env_frame in enumerate(frame_array):
-                        env_frame = np.asarray(env_frame)
-                        if env_frame.dtype != np.uint8:
-                            env_frame = np.clip(env_frame, 0, 255).astype(np.uint8)
-                        Image.fromarray(env_frame).save(
-                            os.path.join(
-                                render_dir,
-                                f"frame_{render_idx:08d}_env{env_idx}.png",
-                            )
+                if isinstance(frame, (list, tuple)):
+                    per_env_frames = list(frame)
+                else:
+                    per_env_frames = [frame]
+
+                if len(per_env_frames) == args.num_envs:
+                    env_frame_iter = enumerate(per_env_frames)
+                else:
+                    target_env = stored_samples[0][0] if stored_samples else 0
+                    env_frame_iter = [(target_env, per_env_frames[0])]
+
+                for env_idx, env_frame in env_frame_iter:
+                    if env_frame is None:
+                        continue
+                    env_frame = np.asarray(env_frame)
+                    if env_frame.ndim > 3:
+                        env_frame = np.squeeze(env_frame)
+                    if env_frame.dtype != np.uint8:
+                        env_frame = np.clip(env_frame, 0, 255).astype(np.uint8)
+
+                    frame_id = env_frame_ids.get(env_idx)
+                    if frame_id is not None:
+                        frame_path = frame_path_from_id(
+                            render_root_dir,
+                            frame_id,
+                            args.num_envs,
+                            local_steps_per_epoch,
                         )
-                        render_idx += 1
-                elif frame_array.ndim == 3:
-                    if frame_array.dtype != np.uint8:
-                        frame_array = np.clip(frame_array, 0, 255).astype(np.uint8)
-                    Image.fromarray(frame_array).save(
-                        os.path.join(render_dir, f"frame_{render_idx:08d}.png")
-                    )
+                        frame_suffix = os.path.relpath(frame_path, render_root_dir)
+                        buffer.register_frame_suffix(frame_id, frame_suffix)
+                    else:
+                        env_dir = os.path.join(epoch_render_dir, f"env_{env_idx:04d}")
+                        frame_path = os.path.join(env_dir, f"frame_{render_idx:08d}.png")
+
+                    os.makedirs(os.path.dirname(frame_path), exist_ok=True)
+                    Image.fromarray(env_frame).save(frame_path)
                     render_idx += 1
 
             obs = next_obs
